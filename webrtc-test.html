@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IC WebSocket Test (Fixed)</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .container { max-width: 800px; margin: 0 auto; }
+    .log { padding: 10px; border: 1px solid #ccc; height: 300px; overflow-y: scroll; margin-top: 10px; }
+    .success { color: green; }
+    .error { color: red; }
+    .info { color: blue; }
+    button { margin: 5px; padding: 8px 12px; }
+    input { margin: 5px; padding: 5px; width: 200px; }
+    .video-container { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+    video { width: 100%; background: #000; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>IC WebSocket Test (Fixed)</h1>
+    
+    <div>
+      <h3>Connection</h3>
+      <div>
+        <label>Canister ID: <input id="canister-id" value="bkyz2-fmaaa-aaaaa-qaaaq-cai" /></label>
+      </div>
+      <div>
+        <button id="connect-btn">Connect</button>
+        <button id="disconnect-btn" disabled>Disconnect</button>
+      </div>
+    </div>
+    
+    <div>
+      <h3>Room Management</h3>
+      <div>
+        <label>Room Name: <input id="room-name" value="test-room" /></label>
+        <button id="create-room-btn" disabled>Create Room</button>
+        <button id="join-room-btn" disabled>Join Room</button>
+        <button id="leave-room-btn" disabled>Leave Room</button>
+      </div>
+    </div>
+    
+    <div class="video-container">
+      <div>
+        <h4>Local Video</h4>
+        <video id="local-video" autoplay muted playsinline></video>
+      </div>
+      <div>
+        <h4>Remote Video</h4>
+        <video id="remote-video" autoplay playsinline></video>
+      </div>
+    </div>
+    
+    <h3>Logs</h3>
+    <div id="log" class="log"></div>
+  </div>
+  
+  <script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
+  
+  <script>
+    // DOM Elements
+    const log = document.getElementById('log');
+    const canisterIdInput = document.getElementById('canister-id');
+    const roomNameInput = document.getElementById('room-name');
+    const connectBtn = document.getElementById('connect-btn');
+    const disconnectBtn = document.getElementById('disconnect-btn');
+    const createRoomBtn = document.getElementById('create-room-btn');
+    const joinRoomBtn = document.getElementById('join-room-btn');
+    const leaveRoomBtn = document.getElementById('leave-room-btn');
+    const localVideo = document.getElementById('local-video');
+    const remoteVideo = document.getElementById('remote-video');
+    
+    // State variables
+    let ws = null;
+    let localStream = null;
+    let peer = null;
+    let currentRoom = null;
+    let pingInterval = null;
+    let isClientReady = false;
+    
+    // Helper functions
+    function addLog(message, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = type;
+      entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+      console.log(`[${type}] ${message}`);
+    }
+    
+    function enableUI(connected) {
+      connectBtn.disabled = connected;
+      disconnectBtn.disabled = !connected;
+      createRoomBtn.disabled = !connected;
+      joinRoomBtn.disabled = !connected;
+      leaveRoomBtn.disabled = !connected || !currentRoom;
+    }
+    
+    // Generate a random client ID
+    function generateClientId() {
+      return `client-${Math.random().toString(36).substring(2, 10)}`;
+    }
+    
+    // Setup media
+    async function setupLocalMedia() {
+      try {
+        if (localStream) {
+          return localStream;
+        }
+        
+        addLog('Requesting camera and microphone access...');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true, 
+          video: { 
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        });
+        
+        localVideo.srcObject = stream;
+        addLog('Camera and microphone access granted', 'success');
+        return stream;
+      } catch (err) {
+        addLog(`Media error: ${err.message}`, 'error');
+        throw err;
+      }
+    }
+    
+    // Create WebRTC peer
+    function createPeer(isInitiator) {
+      addLog(`Creating WebRTC peer (initiator: ${isInitiator})`);
+      
+      if (peer) {
+        peer.destroy();
+      }
+      
+      peer = new SimplePeer({
+        initiator: isInitiator,
+        stream: localStream,
+        trickle: true
+      });
+      
+      peer.on('signal', data => {
+        addLog(`Generated signal: ${data.type || 'ICE candidate'}`);
+        
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          addLog('WebSocket not connected, cannot send signal', 'error');
+          return;
+        }
+        
+        // Only send if we're connected and ready
+        if (!isClientReady) {
+          addLog('Client not ready yet, waiting before sending signal', 'info');
+          setTimeout(() => {
+            sendSignal(data);
+          }, 500);
+          return;
+        }
+        
+        sendSignal(data);
+      });
+      
+      peer.on('connect', () => {
+        addLog('Peer connection established!', 'success');
+      });
+      
+      peer.on('stream', stream => {
+        addLog('Received remote stream', 'success');
+        remoteVideo.srcObject = stream;
+      });
+      
+      peer.on('close', () => {
+        addLog('Peer connection closed');
+      });
+      
+      peer.on('error', err => {
+        addLog(`Peer error: ${err.message}`, 'error');
+      });
+      
+      return peer;
+    }
+    
+    // Send WebRTC signal
+    function sendSignal(data) {
+      try {
+        let message;
+        
+        if (data.type === 'offer') {
+          message = {
+            Offer: {
+              type_: data.type,
+              sdp: data.sdp
+            }
+          };
+        } else if (data.type === 'answer') {
+          message = {
+            Answer: {
+              type_: data.type,
+              sdp: data.sdp
+            }
+          };
+        } else if (data.candidate) {
+          message = {
+            Ice: {
+              candidate: data.candidate,
+              sdp_mid: data.sdpMid || null,
+              sdp_m_line_index: data.sdpMLineIndex || null
+            }
+          };
+        } else {
+          return;
+        }
+        
+        if (message) {
+          ws.send(JSON.stringify(message));
+          addLog(`Sent ${Object.keys(message)[0]} message`);
+        }
+      } catch (error) {
+        addLog(`Error sending signal: ${error.message}`, 'error');
+      }
+    }
+    
+    // Connect to WebSocket
+    async function connect() {
+        try {
+          const canisterId = canisterIdInput.value;
+          
+          if (!canisterId) {
+            addLog('Please enter a canister ID', 'error');
+            return;
+          }
+          
+          // Generate a client nonce
+          const clientNonce = Math.floor(Math.random() * 1000000);
+          
+          addLog(`Connecting to WebSocket gateway...`);
+          
+          // Connect to the WebSocket gateway
+          ws = new WebSocket(`ws://localhost:8080/${canisterId}`);
+          
+          const connectTimeout = setTimeout(() => {
+            if (ws && ws.readyState !== WebSocket.OPEN) {
+              addLog('Connection timeout', 'error');
+              ws.close();
+            }
+          }, 5000);
+          
+          ws.onopen = async () => {
+            clearTimeout(connectTimeout);
+            addLog('WebSocket connection established with gateway', 'success');
+            
+            // The first message from the gateway contains the gateway's principal
+            // We'll handle this in the onmessage handler
+          };
+          
+          ws.onclose = event => {
+            clearTimeout(connectTimeout);
+            clearInterval(pingInterval);
+            addLog(`WebSocket closed: ${event.reason || 'unknown reason'} (code ${event.code})`, 'error');
+            enableUI(false);
+            isClientReady = false;
+          };
+          
+          ws.onerror = error => {
+            clearTimeout(connectTimeout);
+            addLog(`WebSocket error: ${error}`, 'error');
+          };
+          
+          ws.onmessage = handleMessage;
+          
+        } catch (error) {
+          addLog(`Connection error: ${error.message}`, 'error');
+        }
+      }
+    // Disconnect
+    function disconnect() {
+      clearInterval(pingInterval);
+      
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      
+      if (peer) {
+        peer.destroy();
+        peer = null;
+      }
+      
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localVideo.srcObject = null;
+      }
+      
+      remoteVideo.srcObject = null;
+      localStream = null;
+      currentRoom = null;
+      isClientReady = false;
+      
+      enableUI(false);
+      addLog('Disconnected');
+    }
+    
+    // Create room
+    async function createRoom() {
+      const roomName = roomNameInput.value;
+      if (!roomName) {
+        addLog('Please enter a room name', 'error');
+        return;
+      }
+      
+      try {
+        // Call canister method directly using fetch
+        const response = await fetch(`http://localhost:4943/api/v2/canister/${canisterIdInput.value}/call`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            method_name: 'create_video_room',
+            arg: [roomName]
+          })
+        });
+        
+        if (response.ok) {
+          addLog(`Room created: ${roomName}`, 'success');
+          // Now join the room
+          await joinRoom();
+        } else {
+          addLog(`Error creating room: ${response.statusText}`, 'error');
+        }
+      } catch (error) {
+        addLog(`Error creating room: ${error.message}`, 'error');
+      }
+    }
+    
+    // Join room
+    // Join room
+async function joinRoom() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      addLog('WebSocket not connected', 'error');
+      return;
+    }
+    
+    if (!isClientReady) {
+      addLog('Client not ready yet, please wait', 'error');
+      return;
+    }
+    
+    const roomName = roomNameInput.value;
+    if (!roomName) {
+      addLog('Please enter a room name', 'error');
+      return;
+    }
+    
+    try {
+      addLog(`Joining room: ${roomName}...`);
+      
+      // Ensure we have media access
+      if (!localStream) {
+        localStream = await setupLocalMedia();
+      }
+      
+      // Create the WebRtcMessage for joining a room
+      const message = {
+        JoinRoom: roomName
+      };
+      
+      // Format as a proper ws_message call
+      const callEnvelope = {
+        content: {
+          request_type: "call",
+          sender: generateRandomId(), // Should be consistent with previous calls
+          canister_id: canisterIdInput.value,
+          method_name: "ws_message",
+          arg: {
+            message: message
+          }
+        }
+      };
+      
+      ws.send(JSON.stringify(callEnvelope));
+      
+      currentRoom = roomName;
+      leaveRoomBtn.disabled = false;
+      
+      // Give the server a moment to process
+      setTimeout(() => {
+        // Create peer as initiator
+        createPeer(true);
+      }, 1000);
+      
+    } catch (error) {
+      addLog(`Error joining room: ${error.message}`, 'error');
+    }
+  }
+    
+    // Leave room
+    function leaveRoom() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !currentRoom) {
+        addLog('Not in a room or not connected', 'error');
+        return;
+      }
+      
+      try {
+        addLog(`Leaving room: ${currentRoom}`);
+        
+        // Send leave room message
+        ws.send(JSON.stringify({
+          LeaveRoom: currentRoom
+        }));
+        
+        if (peer) {
+          peer.destroy();
+          peer = null;
+        }
+        
+        remoteVideo.srcObject = null;
+        currentRoom = null;
+        leaveRoomBtn.disabled = true;
+        
+      } catch (error) {
+        addLog(`Error leaving room: ${error.message}`, 'error');
+      }
+    }
+    
+    // Handle message
+    function handleMessage(event) {
+        try {
+          if (event.data instanceof Blob) {
+            const reader = new FileReader();
+            reader.onload = function() {
+              try {
+                // The first message is a binary message with the gateway principal
+                if (!isClientReady) {
+                  try {
+                    // Parse CBOR message containing gateway principal
+                    const binaryData = new Uint8Array(reader.result);
+                    
+                    // For debugging
+                    let hexString = '';
+                    for (let i = 0; i < Math.min(binaryData.length, 20); i++) {
+                      hexString += binaryData[i].toString(16).padStart(2, '0') + ' ';
+                    }
+                    addLog(`Received binary data (${binaryData.length} bytes): ${hexString}...`, 'info');
+                    
+                    // After receiving gateway principal, we need to send the open message
+                    sendOpenMessage();
+                    return;
+                  } catch (e) {
+                    addLog(`Error parsing gateway principal: ${e.message}`, 'error');
+                  }
+                }
+                
+                // Try to parse as JSON
+                try {
+                  const text = reader.result;
+                  const message = JSON.parse(text);
+                  processMessage(message);
+                } catch (e) {
+                  // If not valid JSON, it might be a raw binary message
+                  addLog(`Received non-JSON binary data`, 'info');
+                }
+              } catch (e) {
+                addLog(`Error reading blob: ${e.message}`, 'error');
+              }
+            };
+            reader.readAsArrayBuffer(event.data);
+          } else if (typeof event.data === 'string') {
+            try {
+              const message = JSON.parse(event.data);
+              processMessage(message);
+            } catch (e) {
+              addLog(`Error parsing JSON: ${e.message}`, 'error');
+            }
+          }
+        } catch (error) {
+          addLog(`Error handling message: ${error.message}`, 'error');
+        }
+      }
+      
+      // Send the ws_open message to establish the IC WebSocket connection
+      function sendOpenMessage() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          addLog('WebSocket not connected', 'error');
+          return;
+        }
+        
+        try {
+          // Generate a client nonce
+          const clientNonce = Math.floor(Math.random() * 1000000);
+          
+          // Create a proper envelope for the ws_open call
+          const callEnvelope = {
+            content: {
+              request_type: "call",
+              sender: generateRandomId(), // A random principal ID
+              canister_id: canisterIdInput.value,
+              method_name: "ws_open",
+              arg: { 
+                client_nonce: clientNonce,
+                // Include any other required fields for ws_open
+              }
+            },
+            // You may need to include signature fields if required
+          };
+          
+          addLog("Sending ws_open call to establish connection", 'info');
+          ws.send(JSON.stringify(callEnvelope));
+          
+          // Set up media access after sending open
+          setupLocalMedia().then(stream => {
+            localStream = stream;
+            isClientReady = true;
+            enableUI(true);
+            addLog('Client ready', 'success');
+            
+            // Start ping interval
+            pingInterval = setInterval(() => {
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+              }
+            }, 5000);
+          });
+          
+        } catch (error) {
+          addLog(`Error sending open message: ${error.message}`, 'error');
+        }
+      }
+    // Process message
+    function processMessage(message) {
+      try {
+        addLog(`Processing message: ${JSON.stringify(message).substring(0, 50)}...`);
+        
+        if (message.Offer) {
+          addLog('Received WebRTC offer', 'success');
+          if (!peer) {
+            // Create non-initiator peer
+            createPeer(false);
+          }
+          
+          // Apply the offer
+          peer.signal({
+            type: message.Offer.type_,
+            sdp: message.Offer.sdp
+          });
+          
+        } else if (message.Answer) {
+          addLog('Received WebRTC answer', 'success');
+          if (peer) {
+            peer.signal({
+              type: message.Answer.type_,
+              sdp: message.Answer.sdp
+            });
+          }
+          
+        } else if (message.Ice) {
+          addLog('Received ICE candidate', 'info');
+          if (peer) {
+            peer.signal({
+              candidate: message.Ice.candidate,
+              sdpMid: message.Ice.sdp_mid || undefined,
+              sdpMLineIndex: message.Ice.sdp_m_line_index || undefined
+            });
+          }
+          
+        } else if (message.ping) {
+          // Send pong in response to ping
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ 
+              pong: { timestamp: message.ping.timestamp } 
+            }));
+          }
+          
+        } else if (message.pong) {
+          // Received pong
+          const latency = Date.now() - message.pong.timestamp;
+          addLog(`Received pong (latency: ${latency}ms)`, 'info');
+          
+        } else if (message.text) {
+          // Generic message
+          addLog(`Message: ${message.text}`);
+          
+        } else if (message.joined) {
+          // Room joined confirmation
+          addLog(`Room joined: ${message.joined}`, 'success');
+          
+        } else if (message.left) {
+          // Room left confirmation
+          addLog(`Room left: ${message.left}`, 'info');
+          
+        } else {
+          addLog(`Unknown message: ${JSON.stringify(message).substring(0, 100)}...`);
+        }
+      } catch (error) {
+        addLog(`Error processing message: ${error.message}`, 'error');
+      }
+    }
+    
+    // Event listeners
+    connectBtn.addEventListener('click', connect);
+    disconnectBtn.addEventListener('click', disconnect);
+    createRoomBtn.addEventListener('click', createRoom);
+    joinRoomBtn.addEventListener('click', joinRoom);
+    leaveRoomBtn.addEventListener('click', leaveRoom);
+    
+    // Initialize
+    addLog('WebRTC test initialized');
+  </script>
+</body>
+</html>

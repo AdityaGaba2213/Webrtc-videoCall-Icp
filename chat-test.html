@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IC WebSocket Chat Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f0f2f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background-color: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    h1 {
+      text-align: center;
+      color: #2563eb;
+    }
+    .status {
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+      text-align: center;
+    }
+    .connected {
+      background-color: #d1fae5;
+      color: #065f46;
+    }
+    .disconnected {
+      background-color: #fee2e2;
+      color: #b91c1c;
+    }
+    .connecting {
+      background-color: #fef3c7;
+      color: #92400e;
+    }
+    .chat-container {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      height: 300px;
+      margin: 20px 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .messages {
+      flex-grow: 1;
+      padding: 10px;
+      overflow-y: auto;
+      background-color: #f9fafb;
+    }
+    .message {
+      margin-bottom: 10px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      max-width: 70%;
+    }
+    .message.sent {
+      background-color: #dbeafe;
+      color: #1e40af;
+      align-self: flex-end;
+      margin-left: auto;
+    }
+    .message.received {
+      background-color: #e5e7eb;
+      color: #1f2937;
+    }
+    .input-area {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid #ddd;
+    }
+    .chat-input {
+      flex-grow: 1;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    .controls {
+      margin: 20px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .input-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    label {
+      min-width: 100px;
+    }
+    input, select {
+      flex-grow: 1;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    button {
+      padding: 10px 15px;
+      background-color: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #1d4ed8;
+    }
+    button:disabled {
+      background-color: #9ca3af;
+      cursor: not-allowed;
+    }
+    .logs {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #1f2937;
+      color: #e5e7eb;
+      height: 150px;
+      overflow-y: auto;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .log-entry {
+      margin: 4px 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-entry.info {
+      color: #93c5fd;
+    }
+    .log-entry.error {
+      color: #fca5a5;
+    }
+    .log-entry.success {
+      color: #86efac;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>IC WebSocket Chat Test</h1>
+    
+    <div id="connection-status" class="status disconnected">
+      WebSocket: Disconnected
+    </div>
+    
+    <div class="controls">
+      <div class="input-group">
+        <label>Gateway URL:</label>
+        <select id="gateway-url">
+          <option value="ws://127.0.0.1:8080" selected>Local (ws://127.0.0.1:8080)</option>
+          <option value="wss://gateway.icws.io">Production (wss://gateway.icws.io)</option>
+        </select>
+      </div>
+      
+      <div class="input-group">
+        <label>Canister ID:</label>
+        <input type="text" id="canister-id" value="bkyz2-fmaaa-aaaaa-qaaaq-cai">
+      </div>
+      
+      <div class="input-group">
+        <label>Room Name:</label>
+        <input type="text" id="room-name" value="chat-test">
+      </div>
+      
+      <div class="input-group">
+        <button id="connect-btn">Connect</button>
+        <button id="disconnect-btn" disabled>Disconnect</button>
+        <button id="join-room-btn" disabled>Join Room</button>
+        <button id="leave-room-btn" disabled>Leave Room</button>
+      </div>
+    </div>
+    
+    <div id="chat-area" class="chat-container" style="display: none;">
+      <div id="messages" class="messages"></div>
+      <div class="input-area">
+        <input type="text" id="message-input" class="chat-input" placeholder="Type your message..." disabled>
+        <button id="send-btn" disabled>Send</button>
+      </div>
+    </div>
+    
+    <div class="logs">
+      <div id="log-container"></div>
+    </div>
+  </div>
+  
+  <script>
+    // DOM Elements
+    const connectBtn = document.getElementById('connect-btn');
+    const disconnectBtn = document.getElementById('disconnect-btn');
+    const joinRoomBtn = document.getElementById('join-room-btn');
+    const leaveRoomBtn = document.getElementById('leave-room-btn');
+    const sendBtn = document.getElementById('send-btn');
+    const messageInput = document.getElementById('message-input');
+    const messagesContainer = document.getElementById('messages');
+    const chatArea = document.getElementById('chat-area');
+    const gatewayUrlSelect = document.getElementById('gateway-url');
+    const canisterIdInput = document.getElementById('canister-id');
+    const roomNameInput = document.getElementById('room-name');
+    const connectionStatus = document.getElementById('connection-status');
+    const logContainer = document.getElementById('log-container');
+    
+    // State
+    let ws = null;
+    let identity = `user-${Math.random().toString(36).substring(2, 10)}`;
+    let inRoom = false;
+    let currentRoom = null;
+    let messageIdCounter = 0;
+    
+    // Helper Functions
+    function updateStatus(status, message) {
+      connectionStatus.className = `status ${status}`;
+      connectionStatus.textContent = `WebSocket: ${message}`;
+    }
+    
+    function addLog(message, type = 'info') {
+      const logEntry = document.createElement('div');
+      logEntry.className = `log-entry ${type}`;
+      logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+      console.log(`[${type}] ${message}`);
+    }
+    
+    function addMessage(text, isOurs) {
+      const message = document.createElement('div');
+      message.className = `message ${isOurs ? 'sent' : 'received'}`;
+      message.textContent = text;
+      messagesContainer.appendChild(message);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    
+    function generateMessageId() {
+      return `msg_${messageIdCounter++}_${Math.random().toString(36).substring(2, 10)}`;
+    }
+    
+    function updateUI() {
+      const isConnected = ws && ws.readyState === WebSocket.OPEN;
+      
+      connectBtn.disabled = isConnected;
+      disconnectBtn.disabled = !isConnected;
+      joinRoomBtn.disabled = !isConnected || inRoom;
+      leaveRoomBtn.disabled = !isConnected || !inRoom;
+      sendBtn.disabled = !isConnected || !inRoom;
+      messageInput.disabled = !isConnected || !inRoom;
+      
+      chatArea.style.display = inRoom ? 'flex' : 'none';
+    }
+    
+    // WebSocket Functions
+    function connect() {
+      const gateway = gatewayUrlSelect.value;
+      const canister = canisterIdInput.value;
+      
+      if (!gateway || !canister) {
+        addLog('Please enter gateway URL and canister ID', 'error');
+        return;
+      }
+      
+      try {
+        updateStatus('connecting', 'Connecting...');
+        addLog(`Connecting to ${gateway}/${canister} with identity ${identity}`);
+        
+        // Create WebSocket connection
+        ws = new WebSocket(`${gateway}/${canister}?identity=${identity}`);
+        
+        ws.onopen = () => {
+          updateStatus('connected', 'Connected');
+          addLog('WebSocket connected', 'success');
+          updateUI();
+        };
+        
+        ws.onclose = (event) => {
+          updateStatus('disconnected', 'Disconnected');
+          addLog(`WebSocket closed: ${event.reason || 'Unknown reason'} (code: ${event.code})`, 'error');
+          inRoom = false;
+          currentRoom = null;
+          updateUI();
+        };
+        
+        ws.onerror = (error) => {
+          updateStatus('disconnected', 'Error');
+          addLog(`WebSocket error: ${error}`, 'error');
+        };
+        
+        ws.onmessage = handleMessage;
+        
+      } catch (error) {
+        addLog(`Connection error: ${error.message}`, 'error');
+        updateStatus('disconnected', 'Connection failed');
+      }
+    }
+    
+    function disconnect() {
+      if (!ws) return;
+      
+      try {
+        // If in a room, leave it first
+        if (inRoom && currentRoom) {
+          leaveRoom();
+        }
+        
+        ws.close();
+        ws = null;
+        addLog('Disconnected from WebSocket', 'info');
+        
+      } catch (error) {
+        addLog(`Error disconnecting: ${error.message}`, 'error');
+      } finally {
+        updateStatus('disconnected', 'Disconnected');
+        inRoom = false;
+        currentRoom = null;
+        updateUI();
+      }
+    }
+    
+    function joinRoom() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          addLog('WebSocket not connected', 'error');
+          return;
+        }
+        
+        const roomName = roomNameInput.value.trim();
+        if (!roomName) {
+          addLog('Please enter a room name', 'error');
+          return;
+        }
+        
+        // Super-detailed debugging
+        addLog('=== STARTING DETAILED WEBSOCKET JOIN DEBUG ===', 'info');
+        addLog(`Current WebSocket state: ${ws.readyState} (0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED)`, 'info');
+        addLog(`Attempting to join room: "${roomName}"`, 'info');
+        addLog(`Using identity: ${identity}`, 'info');
+        
+        // Create a snapshot of the gateway URL for debugging
+        const gatewayUrlUsed = gatewayUrlSelect.value;
+        const canisterIdUsed = canisterIdInput.value;
+        addLog(`Gateway URL: ${gatewayUrlUsed}`, 'info');
+        addLog(`Canister ID: ${canisterIdUsed}`, 'info');
+        
+        // Test sending a simple empty message first to check connection
+        try {
+          addLog('Sending empty test message...', 'info');
+          ws.send('{}');
+          addLog('Empty test message sent successfully', 'success');
+        } catch (e) {
+          addLog(`Failed to send empty test message: ${e.message}`, 'error');
+        }
+        
+        // Wait a moment to see if the connection survives
+        setTimeout(() => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            addLog('Connection closed after empty test message', 'error');
+            return;
+          }
+          
+          addLog('Connection still active after test message', 'success');
+          
+          // Now try a ping message to see if that works
+          try {
+            const pingMsg = JSON.stringify({ ping: Date.now() });
+            addLog(`Sending ping message: ${pingMsg}`, 'info');
+            ws.send(pingMsg);
+            addLog('Ping message sent successfully', 'success');
+          } catch (e) {
+            addLog(`Failed to send ping message: ${e.message}`, 'error');
+          }
+          
+          // Wait again to check connection
+          setTimeout(() => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+              addLog('Connection closed after ping message', 'error');
+              return;
+            }
+            
+            addLog('Connection still active after ping message', 'success');
+            addLog('Now attempting to send actual join room message...', 'info');
+            
+            try {
+              // Try the IC WebSocket standard format first
+              const standardMsg = {
+                jsonrpc: "2.0",
+                id: generateMessageId(),
+                method: "ic_websocket.join_room",
+                params: {
+                  room_name: roomName
+                }
+              };
+              
+              const standardMsgJson = JSON.stringify(standardMsg);
+              addLog(`Sending standard format: ${standardMsgJson}`, 'info');
+              
+              // Add a message listener specifically for this join attempt
+              const messageHandler = (event) => {
+                addLog('Received message in response to join attempt!', 'success');
+                // We'll leave this handler in place
+              };
+              
+              // Add a close listener specifically for this join attempt
+              const closeHandler = (event) => {
+                const code = event.code || 'unknown';
+                const reason = event.reason || 'No reason provided';
+                addLog(`WebSocket closed during join with code ${code}: ${reason}`, 'error');
+              };
+              
+              // Save existing handlers
+              const oldMessageHandler = ws.onmessage;
+              const oldCloseHandler = ws.onclose;
+              
+              // Set our diagnostic handlers
+              ws.onmessage = messageHandler;
+              ws.onclose = closeHandler;
+              
+              // Use try-catch for the actual send
+              try {
+                ws.send(standardMsgJson);
+                addLog('Standard message sent successfully', 'success');
+                
+                // Check if we're still connected after the send
+                if (ws.readyState === WebSocket.OPEN) {
+                  addLog('Connection still open immediately after sending join message', 'success');
+                } else {
+                  addLog(`Connection state changed to: ${ws.readyState} after sending join message`, 'error');
+                }
+                
+              } catch (sendError) {
+                addLog(`Error sending standard message: ${sendError.message}`, 'error');
+              }
+              
+              // Restore original handlers after a delay
+              setTimeout(() => {
+                if (ws) {
+                  ws.onmessage = oldMessageHandler;
+                  ws.onclose = oldCloseHandler;
+                }
+                
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  addLog('Connection still active 500ms after join attempt!', 'success');
+                  
+                  // Try alternative format after a delay if first one didn't trigger disconnect
+                  setTimeout(() => {
+                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                    
+                    addLog('Trying alternative join format...', 'info');
+                    
+                    // Try the content-wrapped format
+                    const altMsg = {
+                      content: {
+                        request_type: "call",
+                        canister_id: canisterIdUsed,
+                        method_name: "ws_message",
+                        sender: identity,
+                        message_id: generateMessageId(),
+                        arg: {
+                          message: { JoinRoom: roomName }
+                        }
+                      }
+                    };
+                    
+                    try {
+                      ws.send(JSON.stringify(altMsg));
+                      addLog('Alternative format sent successfully', 'success');
+                    } catch (e) {
+                      addLog(`Error sending alternative format: ${e.message}`, 'error');
+                    }
+                    
+                    // Final check
+                    setTimeout(() => {
+                      if (ws && ws.readyState === WebSocket.OPEN) {
+                        addLog('Connection survived all join attempts!', 'success');
+                        addLog('=== DETAILED DEBUG COMPLETE ===', 'info');
+                        
+                        // Success! Update room status
+                        currentRoom = roomName;
+                        inRoom = true;
+                        messagesContainer.innerHTML = '';
+                        updateUI();
+                      }
+                    }, 500);
+                    
+                  }, 1000);
+                }
+              }, 500);
+              
+            } catch (outerError) {
+              addLog(`Critical error in join attempt: ${outerError.message}`, 'error');
+              if (outerError.stack) {
+                addLog(`Stack trace: ${outerError.stack.split('\n').slice(0, 3).join(' | ')}`, 'error');
+              }
+            }
+          }, 500);
+        }, 500);
+      }
+
+    function leaveRoom() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !currentRoom) {
+        addLog('No active room to leave', 'error');
+        return;
+      }
+      
+      try {
+        addLog(`Leaving room: ${currentRoom}`);
+        
+        const message = {
+          content: {
+            request_type: "call",
+            canister_id: canisterIdInput.value,
+            method_name: "ws_message",
+            sender: identity,
+            message_id: generateMessageId(),
+            arg: {
+              message: { LeaveRoom: currentRoom }
+            }
+          }
+        };
+        
+        ws.send(JSON.stringify(message));
+        
+        // Optimistically assume we left
+        addLog(`Left room: ${currentRoom}`, 'info');
+        currentRoom = null;
+        inRoom = false;
+        updateUI();
+        
+      } catch (error) {
+        addLog(`Error leaving room: ${error.message}`, 'error');
+      }
+    }
+    
+    function sendMessage() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !inRoom) {
+        addLog('Cannot send message: not connected or not in a room', 'error');
+        return;
+      }
+      
+      const text = messageInput.value.trim();
+      if (!text) return;
+      
+      try {
+        // Create chat message
+        const chatMessage = {
+          content: {
+            request_type: "call",
+            canister_id: canisterIdInput.value,
+            method_name: "ws_message",
+            sender: identity,
+            message_id: generateMessageId(),
+            arg: {
+              message: { 
+                Chat: { 
+                  room: currentRoom,
+                  text: text 
+                }
+              }
+            }
+          }
+        };
+        
+        ws.send(JSON.stringify(chatMessage));
+        
+        // Show message in UI
+        addMessage(text, true);
+        messageInput.value = '';
+        
+        addLog(`Sent message to room ${currentRoom}`);
+        
+      } catch (error) {
+        addLog(`Error sending message: ${error.message}`, 'error');
+      }
+    }
+    
+    // Add this function to your script
+function examineBytes(data) {
+    addLog('Performing detailed binary analysis...', 'info');
+    
+    // Create array buffer from blob
+    const reader = new FileReader();
+    reader.onload = () => {
+      const arrayBuffer = reader.result;
+      const bytes = new Uint8Array(arrayBuffer);
+      
+      // Convert to hex representation
+      let hexOutput = '';
+      let asciiOutput = '';
+      
+      for (let i = 0; i < Math.min(bytes.length, 100); i++) {
+        const byte = bytes[i];
+        // Add hex representation
+        hexOutput += byte.toString(16).padStart(2, '0') + ' ';
+        
+        // Add ASCII representation (printable chars only)
+        if (byte >= 32 && byte <= 126) {
+          asciiOutput += String.fromCharCode(byte);
+        } else {
+          asciiOutput += '.';
+        }
+        
+        // Line break every 16 bytes
+        if ((i + 1) % 16 === 0) {
+          hexOutput += '  ' + asciiOutput.slice(-16) + '\n';
+          asciiOutput = '';
+        }
+      }
+      
+      // Add any remaining ASCII chars
+      if (asciiOutput.length > 0) {
+        hexOutput += '  ' + asciiOutput;
+      }
+      
+      addLog(`Hex dump of first 100 bytes:\n${hexOutput}`, 'info');
+      
+      // Check for common binary formats
+      if (bytes.length >= 4) {
+        // Check for CBOR
+        if (bytes[0] >= 0x80 && bytes[0] <= 0xBF) {
+          addLog('Binary data might be CBOR format', 'info');
+        }
+        
+        // Check for Candid
+        if (bytes[0] === 0x44 && bytes[1] === 0x49 && bytes[2] === 0x44 && bytes[3] === 0x4C) {
+          addLog('Binary data is Candid format (DIDL magic bytes found)', 'info');
+        }
+        
+        // Check for standard binary encoding headers
+        if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+          addLog('Binary data has UTF-8 BOM', 'info');
+        }
+      }
+    };
+    
+    reader.readAsArrayBuffer(data);
+  }
+  
+  // Update your handleMessage function to call examineBytes on binary data
+  function handleMessage(event) {
+    try {
+      if (event.data instanceof Blob) {
+        // Examine the binary data in detail
+        examineBytes(event.data);
+        
+        // Continue with normal processing...
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const text = reader.result;
+            addLog(`Received binary data (${text.length} bytes)`);
+            
+            try {
+              const data = JSON.parse(text);
+              processMessage(data);
+            } catch (e) {
+              // Show what we received even if it's not JSON
+              const visibleChars = text.replace(/[^\x20-\x7E]/g, '?'); 
+              addLog(`Non-JSON binary data: ${visibleChars.substring(0, 100)}`, 'error');
+            }
+          } catch (e) {
+            addLog(`Error reading binary data: ${e.message}`, 'error');
+          }
+        };
+        reader.readAsText(event.data);
+        
+      } else if (typeof event.data === 'string') {
+        // Existing code for handling text data...
+            // Text data
+            addLog(`Received text message (${event.data.length} bytes)`);
+            
+            try {
+              const data = JSON.parse(event.data);
+              processMessage(data);
+            } catch (e) {
+              addLog(`Failed to parse text as JSON: ${e.message}`, 'error');
+              // Show what we received
+              addLog(`Raw text: ${event.data.substring(0, 100)}${event.data.length > 100 ? '...' : ''}`, 'info');
+            }
+          }
+          
+        } catch (error) {
+          addLog(`Error handling message: ${error.message}`, 'error');
+        }
+      }
+
+    function processMessage(data) {
+      addLog(`Processing message: ${JSON.stringify(data).substring(0, 100)}...`);
+      
+      // Handle different message types
+      if (data.Chat) {
+        // Chat message received
+        const chat = data.Chat;
+        addLog(`Received chat from ${data.sender || 'unknown'}: ${chat.text}`);
+        addMessage(chat.text, false);
+        
+      } else if (data.joined) {
+        // Room joined confirmation
+        addLog(`Room joined confirmation: ${data.joined}`, 'success');
+        currentRoom = data.joined;
+        inRoom = true;
+        updateUI();
+        
+      } else if (data.left) {
+        // Room left confirmation
+        addLog(`Room left confirmation: ${data.left}`, 'info');
+        currentRoom = null;
+        inRoom = false;
+        updateUI();
+        
+      } else if (data.error) {
+        // Error from server
+        addLog(`Server error: ${data.error}`, 'error');
+        
+      } else if (data.rooms) {
+        // Room list
+        addLog(`Available rooms: ${data.rooms.join(', ')}`, 'info');
+        
+      } else {
+        // Unknown message type
+        addLog(`Received unknown message type: ${JSON.stringify(data).substring(0, 100)}...`);
+      }
+    }
+    
+    // Event Listeners
+    connectBtn.addEventListener('click', connect);
+    disconnectBtn.addEventListener('click', disconnect);
+    joinRoomBtn.addEventListener('click', joinRoom);
+    leaveRoomBtn.addEventListener('click', leaveRoom);
+    sendBtn.addEventListener('click', sendMessage);
+    
+    messageInput.addEventListener('keypress', (event) => {
+      if (event.key === 'Enter') {
+        sendMessage();
+      }
+    });
+    
+    // Initialize
+    addLog('IC WebSocket Chat Test initialized');
+    updateUI();
+  </script>
+</body>
+</html>

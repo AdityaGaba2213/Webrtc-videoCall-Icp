@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IC WebSocket Official Test</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .log { padding: 10px; border: 1px solid #ccc; height: 300px; overflow-y: scroll; margin-top: 10px; }
+    .success { color: green; }
+    .error { color: red; }
+    .btn { margin: 5px; padding: 8px 12px; }
+    .status { padding: 5px; border-radius: 4px; display: inline-block; min-width: 80px; text-align: center; }
+    .connected { background-color: #d4edda; color: #155724; }
+    .disconnected { background-color: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <h1>IC WebSocket Official Test</h1>
+  
+  <div>
+    <h3>Status: <span id="status" class="status disconnected">Disconnected</span></h3>
+    <label>Gateway URL: <input id="gateway" value="ws://127.0.0.1:8080" /></label>
+    <label>Canister ID: <input id="canister" value="bkyz2-fmaaa-aaaaa-qaaaq-cai" /></label>
+    <label>IC Host: <input id="ic-host" value="http://127.0.0.1:4943" /></label>
+    <button id="connect" class="btn">Connect</button>
+    <button id="disconnect" class="btn" disabled>Disconnect</button>
+  </div>
+  
+  <div>
+    <h3>Simple Actions</h3>
+    <button id="create-ping" class="btn" disabled>Send Ping</button>
+    <button id="list-rooms" class="btn" disabled>List Rooms</button>
+  </div>
+  
+  <div>
+    <h3>Room Management</h3>
+    <label>Room Name: <input id="room-name" /></label>
+    <button id="create-room" class="btn" disabled>Create Room</button>
+    <button id="join-room" class="btn" disabled>Join Room</button>
+    <button id="leave-room" class="btn" disabled>Leave Room</button>
+  </div>
+  
+  <h3>Logs</h3>
+  <div id="log" class="log"></div>
+  
+  <!-- Include the official IC WebSocket library -->
+  <script src="https://unpkg.com/ic-websocket-js@0.1.1/dist/index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@dfinity/agent@0.18.0/lib/index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@dfinity/auth-client@0.18.0/lib/index.js"></script>
+  
+  <script>
+    const log = document.getElementById('log');
+    const statusEl = document.getElementById('status');
+    const connectBtn = document.getElementById('connect');
+    const disconnectBtn = document.getElementById('disconnect');
+    const createPingBtn = document.getElementById('create-ping');
+    const createRoomBtn = document.getElementById('create-room');
+    const listRoomsBtn = document.getElementById('list-rooms');
+    const joinRoomBtn = document.getElementById('join-room');
+    const leaveRoomBtn = document.getElementById('leave-room');
+    
+    let ws = null;
+    let currentRoom = null;
+    
+    function addLog(message, type = '') {
+      const entry = document.createElement('div');
+      entry.className = type;
+      entry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+    }
+    
+    function updateStatus(connected) {
+      statusEl.textContent = connected ? 'Connected' : 'Disconnected';
+      statusEl.className = `status ${connected ? 'connected' : 'disconnected'}`;
+      
+      connectBtn.disabled = connected;
+      disconnectBtn.disabled = !connected;
+      createPingBtn.disabled = !connected;
+      createRoomBtn.disabled = !connected;
+      listRoomsBtn.disabled = !connected;
+      joinRoomBtn.disabled = !connected;
+      leaveRoomBtn.disabled = !connected || !currentRoom;
+    }
+    
+    connectBtn.addEventListener('click', async () => {
+      const gateway = document.getElementById('gateway').value;
+      const canister = document.getElementById('canister').value;
+      const icHost = document.getElementById('ic-host').value;
+      
+      if (!gateway || !canister || !icHost) {
+        addLog('Please fill in all connection fields', 'error');
+        return;
+      }
+      
+      try {
+        addLog('Generating identity...');
+        const identity = window.ic_websocket_js.generateRandomIdentity();
+        
+        addLog('Creating WebSocket config...');
+        const config = window.ic_websocket_js.createWsConfig({
+          canisterId: canister,
+          identity: identity,
+          icUrl: icHost,
+        });
+        
+        addLog(`Connecting to ${gateway}/${canister}`);
+        ws = new window.ic_websocket_js.IcWebSocket(`${gateway}/${canister}`, [], config);
+        
+        ws.onopen = () => {
+          addLog('WebSocket connection established', 'success');
+          updateStatus(true);
+        };
+        
+        ws.onclose = (event) => {
+          addLog(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason || 'Unknown'}`, 'error');
+          updateStatus(false);
+        };
+        
+        ws.onerror = (error) => {
+          addLog(`WebSocket error: ${error}`, 'error');
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            if (event.data instanceof Blob) {
+              addLog('Received binary data, reading...');
+              const reader = new FileReader();
+              reader.onload = function() {
+                try {
+                  const textData = reader.result;
+                  addLog(`Binary content: ${textData.slice(0, 100)}${textData.length > 100 ? '...' : ''}`);
+                  handleMessage(textData);
+                } catch (e) {
+                  addLog(`Error processing binary data: ${e}`, 'error');
+                }
+              };
+              reader.readAsText(event.data);
+            } else {
+              addLog(`Received text message: ${event.data}`);
+              handleMessage(event.data);
+            }
+          } catch (error) {
+            addLog(`Error processing message: ${error}`, 'error');
+          }
+        };
+      } catch (error) {
+        addLog(`Connection error: ${error.message}`, 'error');
+      }
+    });
+    
+    disconnectBtn.addEventListener('click', () => {
+      if (ws) {
+        ws.close();
+        ws = null;
+        currentRoom = null;
+        addLog('WebSocket disconnected');
+        updateStatus(false);
+      }
+    });
+    
+    createPingBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      try {
+        // Send a simple ping message
+        const pingMsg = { type: 'ping', timestamp: Date.now() };
+        addLog(`Sending ping: ${JSON.stringify(pingMsg)}`);
+        ws.send(JSON.stringify(pingMsg));
+      } catch (error) {
+        addLog(`Error sending ping: ${error.message}`, 'error');
+      }
+    });
+    
+    createRoomBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      const roomName = document.getElementById('room-name').value;
+      if (!roomName) {
+        addLog('Please enter a room name', 'error');
+        return;
+      }
+      
+      try {
+        // Send create room message
+        addLog(`Creating room: ${roomName}`);
+        const message = JSON.stringify({ JoinRoom: roomName });
+        ws.send(message);
+        currentRoom = roomName;
+        leaveRoomBtn.disabled = false;
+      } catch (error) {
+        addLog(`Error creating room: ${error.message}`, 'error');
+      }
+    });
+    
+    listRoomsBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      try {
+        // For websocket, we can't directly call the canister methods
+        // So we'll send a custom request for listing rooms
+        addLog('Requesting room list');
+        const message = JSON.stringify({ ListRooms: null });
+        ws.send(message);
+      } catch (error) {
+        addLog(`Error listing rooms: ${error.message}`, 'error');
+      }
+    });
+    
+    joinRoomBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      const roomName = document.getElementById('room-name').value;
+      if (!roomName) {
+        addLog('Please enter a room name', 'error');
+        return;
+      }
+      
+      try {
+        addLog(`Joining room: ${roomName}`);
+        const message = JSON.stringify({ JoinRoom: roomName });
+        ws.send(message);
+        currentRoom = roomName;
+        leaveRoomBtn.disabled = false;
+      } catch (error) {
+        addLog(`Error joining room: ${error.message}`, 'error');
+      }
+    });
+    
+    leaveRoomBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !currentRoom) {
+        addLog('Not in a room or not connected', 'error');
+        return;
+      }
+      
+      try {
+        addLog(`Leaving room: ${currentRoom}`);
+        const message = JSON.stringify({ LeaveRoom: currentRoom });
+        ws.send(message);
+        currentRoom = null;
+        leaveRoomBtn.disabled = true;
+      } catch (error) {
+        addLog(`Error leaving room: ${error.message}`, 'error');
+      }
+    });
+    
+    function handleMessage(data) {
+      try {
+        const message = JSON.parse(data);
+        if (message.pong) {
+          addLog(`Received pong. Latency: ${Date.now() - message.pong.timestamp}ms`, 'success');
+        } else if (message.rooms) {
+          addLog(`Rooms list: ${message.rooms.join(', ')}`, 'success');
+        } else if (message.joined) {
+          addLog(`Successfully joined room: ${message.joined}`, 'success');
+        } else if (message.left) {
+          addLog(`Successfully left room: ${message.left}`, 'success');
+        } else if (message.error) {
+          addLog(`Error from server: ${message.error}`, 'error');
+        } else {
+          addLog(`Unhandled message type: ${JSON.stringify(message)}`);
+        }
+      } catch (e) {
+        addLog(`Failed to parse message as JSON: ${e.message}`, 'error');
+      }
+    }
+    
+    addLog('IC WebSocket test initialized');
+  </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "name": "ic_websocket_example",
+  "version": "0.3.2",
+  "description": "Internet Computer starter application",
+  "keywords": [
+    "Internet Computer",
+    "Motoko",
+    "JavaScript",
+    "Canister"
+  ],
+  "scripts": {
+    "build": "cd src/ic_websocket_example_frontend && npm run build",
+    "prebuild": "npm run generate",
+    "start": "cd src/ic_websocket_example_frontend && npm run dev",
+    "prestart": "npm run generate",
+    "deploy:local": "dfx deploy --network=local",
+    "deploy:ic": "dfx deploy --network=ic",
+    "generate": "dfx generate ic_websocket_example_backend"
+  },
+  "dependencies": {
+    "@dfinity/agent": "^2.3.0",
+    "@dfinity/candid": "^2.3.0",
+    "@dfinity/identity-secp256k1": "^2.3.0",
+    "@dfinity/principal": "^2.3.0",
+    "@types/simple-peer": "^9.11.8",
+    "ic-websocket-js": "^0.5.0",
+    "simple-peer": "^9.11.1"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.7",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.4"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "browserslist": [
+    "last 2 chrome version",
+    "last 2 firefox version",
+    "last 2 safari version",
+    "last 2 edge version"
+  ]
+}

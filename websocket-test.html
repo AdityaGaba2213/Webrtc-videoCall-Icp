@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>IC WebSocket Basic Test</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .log { padding: 10px; border: 1px solid #ccc; height: 300px; overflow-y: scroll; }
+    .success { color: green; }
+    .error { color: red; }
+    .info { color: blue; }
+    button { margin: 5px; padding: 8px 12px; }
+  </style>
+</head>
+<body>
+  <h1>IC WebSocket Basic Test</h1>
+  <div>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <button id="join-room" disabled>Join Room</button>
+    <button id="leave-room" disabled>Leave Room</button>
+    <button id="list-rooms" disabled>List Rooms</button>
+  </div>
+  <div class="log" id="log"></div>
+  
+  <script>
+    // Connection parameters
+    const CANISTER_ID = "bkyz2-fmaaa-aaaaa-qaaaq-cai";
+    const IDENTITY = "test-user-" + Math.random().toString(36).substring(2, 10);
+    const GATEWAY_URL = "ws://localhost:8080";
+    const ROOM_NAME = "test-room";
+    
+    // DOM elements
+    const log = document.getElementById('log');
+    const connectBtn = document.getElementById('connect');
+    const disconnectBtn = document.getElementById('disconnect');
+    const joinRoomBtn = document.getElementById('join-room');
+    const leaveRoomBtn = document.getElementById('leave-room');
+    const listRoomsBtn = document.getElementById('list-rooms');
+    
+    // State
+    let ws = null;
+    let inRoom = false;
+    let pingInterval = null;
+    
+    function addLog(msg, type = 'normal') {
+      const entry = document.createElement('div');
+      entry.className = type;
+      entry.textContent = `${new Date().toLocaleTimeString()}: ${msg}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+      console.log(`[${type}] ${msg}`);
+    }
+    
+    function updateButtons(connected, room) {
+      connectBtn.disabled = connected;
+      disconnectBtn.disabled = !connected;
+      joinRoomBtn.disabled = !connected || room;
+      leaveRoomBtn.disabled = !connected || !room;
+      listRoomsBtn.disabled = !connected;
+    }
+    
+    function generateMessageId() {
+      return 'msg_' + Math.random().toString(36).substring(2, 15);
+    }
+    
+    connectBtn.addEventListener('click', () => {
+      try {
+        addLog(`Connecting to WebSocket with identity: ${IDENTITY}...`, 'info');
+        ws = new WebSocket(`${GATEWAY_URL}/${CANISTER_ID}?identity=${IDENTITY}`);
+        
+        ws.onopen = () => {
+          addLog('WebSocket connected!', 'success');
+          updateButtons(true, false);
+          
+          // Start ping interval to keep the connection alive
+          pingInterval = setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              const pingMessage = {
+                type: "ping",
+                timestamp: Date.now()
+              };
+              ws.send(JSON.stringify(pingMessage));
+              addLog('Sent ping', 'info');
+            }
+          }, 10000);  // Send ping every 10 seconds
+        };
+        
+        ws.onclose = (event) => {
+          addLog(`WebSocket closed: ${event.reason || 'unknown reason'}`, 'error');
+          updateButtons(false, false);
+          inRoom = false;
+          
+          if (pingInterval) {
+            clearInterval(pingInterval);
+            pingInterval = null;
+          }
+        };
+        
+        ws.onerror = (error) => {
+          addLog(`WebSocket error: ${error}`, 'error');
+        };
+        
+        ws.onmessage = (event) => {
+          if (event.data instanceof Blob) {
+            // Handle binary data
+            const reader = new FileReader();
+            reader.onload = () => {
+              try {
+                const textData = reader.result;
+                addLog(`Received binary data: ${textData.slice(0, 50)}...`);
+                
+                try {
+                  const jsonData = JSON.parse(textData);
+                  handleMessage(jsonData);
+                } catch (e) {
+                  addLog(`Not valid JSON: ${e.message}`, 'error');
+                }
+              } catch (e) {
+                addLog(`Error reading binary data: ${e.message}`, 'error');
+              }
+            };
+            reader.readAsText(event.data);
+          } else {
+            // Handle text data
+            addLog(`Received message: ${event.data}`);
+            try {
+              const jsonData = JSON.parse(event.data);
+              handleMessage(jsonData);
+            } catch (e) {
+              addLog(`Error parsing JSON: ${e.message}`, 'error');
+            }
+          }
+        };
+        
+      } catch (error) {
+        addLog(`Connection error: ${error.message}`, 'error');
+      }
+    });
+    
+    function handleMessage(data) {
+      addLog(`Processing message: ${JSON.stringify(data).substring(0, 100)}${JSON.stringify(data).length > 100 ? '...' : ''}`);
+      
+      // Handle different message types
+      if (data.text) {
+        addLog(`Server message: ${data.text}`, 'info');
+      } else if (data.pong) {
+        addLog(`Received pong: ${JSON.stringify(data.pong)}`, 'success');
+      } else if (data.rooms) {
+        addLog(`Available rooms: ${data.rooms.join(', ')}`, 'success');
+      } else if (data.joined) {
+        addLog(`Joined room: ${data.joined}`, 'success');
+        inRoom = true;
+        updateButtons(true, true);
+      } else if (data.left) {
+        addLog(`Left room: ${data.left}`, 'success');
+        inRoom = false;
+        updateButtons(true, false);
+      } else if (data.error) {
+        addLog(`Error from server: ${data.error}`, 'error');
+      }
+    }
+    
+    disconnectBtn.addEventListener('click', () => {
+      if (ws) {
+        ws.close();
+        ws = null;
+        inRoom = false;
+        updateButtons(false, false);
+        
+        if (pingInterval) {
+          clearInterval(pingInterval);
+          pingInterval = null;
+        }
+      }
+    });
+    
+    joinRoomBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      try {
+        // Create a properly formatted websocket message
+        const message = {
+          content: {
+            request_type: "call",
+            canister_id: CANISTER_ID,
+            method_name: "ws_message",
+            sender: IDENTITY,
+            message_id: generateMessageId(),
+            arg: {
+              message: { JoinRoom: ROOM_NAME }
+            }
+          }
+        };
+
+        addLog(`Sending join room request for room: ${ROOM_NAME}`, 'info');
+        ws.send(JSON.stringify(message));
+      } catch (error) {
+        addLog(`Error sending join message: ${error.message}`, 'error');
+      }
+    });
+    
+    leaveRoomBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      try {
+        // Create a properly formatted websocket message
+        const message = {
+          content: {
+            request_type: "call",
+            canister_id: CANISTER_ID,
+            method_name: "ws_message",
+            sender: IDENTITY,
+            message_id: generateMessageId(),
+            arg: {
+              message: { LeaveRoom: ROOM_NAME }
+            }
+          }
+        };
+
+        addLog(`Sending leave room request for room: ${ROOM_NAME}`, 'info');
+        ws.send(JSON.stringify(message));
+      } catch (error) {
+        addLog(`Error sending leave message: ${error.message}`, 'error');
+      }
+    });
+    
+    listRoomsBtn.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('WebSocket not connected', 'error');
+        return;
+      }
+      
+      try {
+        // Create a properly formatted websocket message
+        const message = {
+          content: {
+            request_type: "call",
+            canister_id: CANISTER_ID,
+            method_name: "ws_message",
+            sender: IDENTITY,
+            message_id: generateMessageId(),
+            arg: {
+              message: { ListRooms: null }
+            }
+          }
+        };
+
+        addLog('Sending list rooms request', 'info');
+        ws.send(JSON.stringify(message));
+      } catch (error) {
+        addLog(`Error sending list rooms message: ${error.message}`, 'error');
+      }
+    });
+    
+    // Initialize
+    addLog('WebSocket test initialized', 'info');
+  </script>
+</body>
+</html>
